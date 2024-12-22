@@ -106,6 +106,7 @@ class RadarDataset(Dataset):
         # Generate Clutter
         nu = torch.empty(1).uniform_(0.1, 1.5) if self.nu is None else self.nu
         C = self.generate_clutter(nu)
+        # C = torch.zeros_like(W)
 
         # Initialize target signal and label matrices
         S = torch.zeros_like(W)
