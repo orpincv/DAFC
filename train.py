@@ -189,10 +189,10 @@ def train():
     plot_training_history(range_history, detection_type)
 
     # Train Doppler detector
-    # print("\nTraining Doppler Detector:")
-    # detection_type = "doppler"
-    # ratio = calculate_ratio(train_loader, detection_type)
-    # criterion = CBBCE(ratio)
-    # doppler_model = DAFCRadarNet(detection_type)
-    # doppler_history = train_model(doppler_model, criterion, train_loader, val_loader, detection_type)
-    # plot_training_history(doppler_history, detection_type)
+    print("\nTraining Doppler Detector:")
+    detection_type = "doppler"
+    ratio = calculate_ratio(train_loader, detection_type)
+    criterion = CBBCE(ratio)
+    doppler_model = DAFCRadarNet(detection_type)
+    doppler_history = train_model(doppler_model, criterion, train_loader, val_loader, detection_type)
+    plot_training_history(doppler_history, detection_type)

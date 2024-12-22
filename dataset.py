@@ -46,6 +46,7 @@ class RadarDataset(Dataset):
         # Doppler steering vector
         w_d = (2 * torch.pi * self.T0 * 2 * self.fc * velocities) / self.c
         doppler_steering = torch.exp(-1j * torch.outer(w_d, torch.arange(self.K)))
+
         # Fast-time x Slow-time matrix
         rd_signal = range_steering.unsqueeze(-1) * doppler_steering.unsqueeze(1)
 
@@ -60,6 +61,7 @@ class RadarDataset(Dataset):
         # Scaling SCNR for each target
         S_norm = torch.linalg.norm(rd_signal, dim=(1, 2)).real
         sig_amp = (10 ** (SCNR_dBs / 20)) * (self.cn_norm / S_norm)
+
         # Expand sig_amp to have shape (N_range_bins, 1, 1) for broadcasting
         rd_signal = (sig_amp.unsqueeze(-1).unsqueeze(-1) * rd_signal).sum(dim=0)
         return rd_signal
@@ -87,8 +89,10 @@ class RadarDataset(Dataset):
 
         # Generate texture component
         s = torch.distributions.Gamma(nu, nu).sample((self.dR,))
+
         # Scale by texture component
         c_t = (torch.sqrt(s).unsqueeze(0) * w_t.unsqueeze(-1)).squeeze(-1)
+
         # Convert to fast-time × slow-time representation
         c_r_steer = torch.exp(
             -1j * 2 * torch.pi * torch.outer(torch.arange(self.N), self.R) * (2 * self.B) / (self.c * self.N))
@@ -98,10 +102,11 @@ class RadarDataset(Dataset):
     def gen_frame_and_labels(self):
         # Generate Noise
         W = (torch.randn(self.N, self.K, dtype=torch.cfloat) / torch.sqrt(torch.tensor(self.sigma2)))
-        # W = torch.zeros(self.N, self.K)
+
         # Generate Clutter
         nu = torch.empty(1).uniform_(0.1, 1.5) if self.nu is None else self.nu
         C = self.generate_clutter(nu)
+
         # Initialize target signal and label matrices
         S = torch.zeros_like(W)
         rd_label = torch.zeros(self.dR, self.dV)
@@ -118,6 +123,7 @@ class RadarDataset(Dataset):
                 r_bin = torch.argmin(torch.abs(self.R - r))
                 v_bin = torch.argmin(torch.abs(self.V - v))
                 rd_label[r_bin, v_bin] = True
+
         # Combine signals
         X = (S + C + W)
         return X, rd_label
@@ -133,10 +139,13 @@ class RadarDataset(Dataset):
 def preprocess_rd_map(X):
     # Apply 2D inverse FFT
     rd_map = torch.abs(torch.fft.ifft2(X)) ** 2
+
     # Shift zero-frequency components to the center
     rd_map = torch.fft.fftshift(rd_map, dim=(-2, -1))
+
     # Extract positive ranges and truncate Doppler bins
     rd_map = rd_map[:, rd_map.shape[-2] // 2:, 1:]
+
     return rd_map
 
 

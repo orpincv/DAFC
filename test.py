@@ -192,45 +192,204 @@ class CombinedRadarTester:
         return np.array(pd_list), np.array(pfa_list), scnr_range
 
 
+# class CFARTester:
+#     def __init__(self, detector, device):
+#         """Initialize CFAR tester"""
+#         self.device = device
+#         self.detector = detector.to(self.device)
+#         # Pre-compute the neighborhood kernel once
+#         self.kernel = torch.ones(1, 1, 3, 3, device=device)
+#
+#     def evaluate_batch(self, rd_maps, Y_true, threshold):
+#         """Evaluate CFAR detector on a batch with vectorized operations"""
+#         rd_maps = rd_maps.to(self.device)
+#         Y_true = Y_true.to(self.device)
+#
+#         # Process entire batch at once
+#         with torch.no_grad():
+#             detection_surface = self.detector(rd_maps)
+#             Y_hat = (detection_surface > threshold).float()
+#
+#         # Vectorized metric calculation
+#         Y_true_extended = F.conv2d(Y_true.unsqueeze(1).float(), self.kernel, padding=1).squeeze(1)
+#         Y_true_extended = (Y_true_extended > 0)
+#
+#         # Calculate PFA (exclude target neighborhoods)
+#         valid_cells = (~Y_true_extended).float()
+#         false_alarms = (Y_hat * valid_cells).sum(dim=(1, 2))
+#         total_valid_cells = valid_cells.sum(dim=(1, 2))
+#
+#         # Calculate PD
+#         Y_hat_extended = F.conv2d(Y_hat.unsqueeze(1), self.kernel, padding=1).squeeze(1)
+#         Y_hat_extended = (Y_hat_extended > 0).float()
+#
+#         n_targets = Y_true.sum(dim=(1, 2))
+#         detected = (Y_hat_extended * Y_true).sum(dim=(1, 2))
+#
+#         return {'false_alarms': false_alarms, 'valid_cells': total_valid_cells, 'detected': detected,
+#                 'n_targets': n_targets}
+#
+#     def find_threshold(self, loader, target_pfa):
+#         """Find threshold for target PFA using binary search with vectorized operations"""
+#         # Initialize threshold using first batch
+#         first_batch = next(iter(loader))
+#         rd_maps = first_batch[0].to(self.device)
+#         with torch.no_grad():
+#             detection_surface = self.detector(rd_maps)
+#
+#         # Set initial threshold as 0.5 * (max - min)
+#         max_val = detection_surface.max()
+#         min_val = detection_surface.min()
+#         th = min_val + 0.5 * (max_val - min_val)
+#         step = 0.5 * (max_val - min_val)
+#
+#         cnt = 1
+#         pfa_res = 1.0
+#         rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
+#
+#         # Binary search of the threshold
+#         while rel_err >= 0.01 and cnt < 35:
+#             total_false_alarms = 0
+#             total_valid_cells = 0
+#
+#             for rd_maps, Y_true in loader:
+#                 metrics = self.evaluate_batch(rd_maps, Y_true, th)
+#                 total_false_alarms += metrics['false_alarms'].sum()
+#                 total_valid_cells += metrics['valid_cells'].sum()
+#
+#             pfa_res = (total_false_alarms / total_valid_cells).item()
+#             rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
+#
+#             step = step * 0.5
+#             if pfa_res > target_pfa:
+#                 th += step
+#             else:
+#                 th -= step
+#
+#             cnt += 1
+#
+#         print(f"Found threshold = {th:.4f}, PFA = {pfa_res:.6f} after {cnt} iterations")
+#         return th
+#
+#     def evaluate_pd_pfa(self, nu, scnr=0):
+#         """Evaluate PD vs PFA with vectorized batch processing"""
+#         # Create dataset with larger batch size for better parallelization
+#         dataset = ConcatDataset([RadarDataset(1024, 4, False, nu, scnr),
+#                                  RadarDataset(512, 0, False, nu, scnr)])
+#         loader = DataLoader(dataset, batch_size=512, num_workers=2, persistent_workers=True,
+#                             pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
+#
+#         target_pfas = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+#         results = []
+#
+#         for target_pfa in tqdm(target_pfas, desc="Testing PFAs"):
+#             threshold = self.find_threshold(loader, target_pfa)
+#
+#             total_detected = 0
+#             total_targets = 0
+#             total_false_alarms = 0
+#             total_valid_cells = 0
+#
+#             for rd_maps, Y_true in loader:
+#                 metrics = self.evaluate_batch(rd_maps, Y_true, threshold)
+#
+#                 total_detected += metrics['detected'].sum()
+#                 total_targets += metrics['n_targets'].sum()
+#                 total_false_alarms += metrics['false_alarms'].sum()
+#                 total_valid_cells += metrics['valid_cells'].sum()
+#
+#             avg_pd = (total_detected / total_targets).item()
+#             avg_pfa = (total_false_alarms / total_valid_cells).item()
+#             results.append((avg_pd, avg_pfa))
+#
+#         pd_list, pfa_list = zip(*results)
+#         return np.array(pd_list), np.array(pfa_list)
+#
+#     def evaluate_pd_scnr(self, nu, target_pfa=5e-4):
+#         """Evaluate PD vs SCNR with vectorized batch processing"""
+#         # Find threshold using reference dataset
+#         ref_dataset = ConcatDataset([RadarDataset(1024, 4, False, nu, 0),
+#                                      RadarDataset(512, 0, False, nu)])
+#         ref_loader = DataLoader(ref_dataset, batch_size=512, num_workers=2, persistent_workers=True,
+#                                 pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
+#         threshold = self.find_threshold(ref_loader, target_pfa)
+#
+#         scnr_range = np.arange(-40, 11, 5)
+#         results = []
+#
+#         for scnr in tqdm(scnr_range, desc="Testing SCNR values"):
+#             test_dataset = ConcatDataset([RadarDataset(1024, 4, False, nu, scnr),
+#                                           RadarDataset(512, 0, False, nu)])
+#             test_loader = DataLoader(test_dataset, batch_size=512, num_workers=2, persistent_workers=True,
+#                                      pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
+#
+#             total_detected = 0
+#             total_targets = 0
+#             total_false_alarms = 0
+#             total_valid_cells = 0
+#
+#             for rd_maps, Y_true in test_loader:
+#                 metrics = self.evaluate_batch(rd_maps, Y_true, threshold)
+#
+#                 total_detected += metrics['detected'].sum()
+#                 total_targets += metrics['n_targets'].sum()
+#                 total_false_alarms += metrics['false_alarms'].sum()
+#                 total_valid_cells += metrics['valid_cells'].sum()
+#
+#             avg_pd = (total_detected / total_targets).item()
+#             avg_pfa = (total_false_alarms / total_valid_cells).item()
+#             results.append((avg_pd, avg_pfa))
+#
+#         pd_list, pfa_list = zip(*results)
+#         return np.array(pd_list), np.array(pfa_list), scnr_range
+
+
 class CFARTester:
     def __init__(self, detector, device):
         """Initialize CFAR tester"""
         self.device = device
         self.detector = detector.to(self.device)
-        # Pre-compute the neighborhood kernel once
+        # Pre-compute the neighborhood kernel for convolution
         self.kernel = torch.ones(1, 1, 3, 3, device=device)
 
     def evaluate_batch(self, rd_maps, Y_true, threshold):
-        """Evaluate CFAR detector on a batch with vectorized operations"""
+        """
+        Evaluate CFAR detector on a batch with vectorized operations using the same
+        neighborhood approach as CombinedRadarTester
+        """
+        # Get CFAR detection surface
         rd_maps = rd_maps.to(self.device)
         Y_true = Y_true.to(self.device)
-
-        # Process entire batch at once
         with torch.no_grad():
             detection_surface = self.detector(rd_maps)
             Y_hat = (detection_surface > threshold).float()
 
-        # Vectorized metric calculation
-        Y_true_extended = F.conv2d(Y_true.unsqueeze(1).float(), self.kernel, padding=1).squeeze(1)
-        Y_true_extended = (Y_true_extended > 0)
-
-        # Calculate PFA (exclude target neighborhoods)
-        valid_cells = (~Y_true_extended).float()
-        false_alarms = (Y_hat * valid_cells).sum(dim=(1, 2))
-        total_valid_cells = valid_cells.sum(dim=(1, 2))
-
-        # Calculate PD
+        # Create extended matrices through convolution for target neighborhoods
+        Y_true_expanded = F.conv2d(Y_true.unsqueeze(1).float(), self.kernel, padding=1).squeeze(1)
+        Y_true_extended = (Y_true_expanded > 0)
         Y_hat_extended = F.conv2d(Y_hat.unsqueeze(1), self.kernel, padding=1).squeeze(1)
         Y_hat_extended = (Y_hat_extended > 0).float()
 
+        # Calculate metrics
+        # For PFA: exclude target neighborhoods from consideration
+        valid_cells = (~Y_true_extended).float()
+        false_alarms = (Y_hat * valid_cells).sum()
+        total_valid_cells = valid_cells.sum()
+        pfa = false_alarms.item() / total_valid_cells.item()
+
+        # For PD: count actual targets vs detected targets in neighborhoods
         n_targets = Y_true.sum(dim=(1, 2))
         detected = (Y_hat_extended * Y_true).sum(dim=(1, 2))
 
-        return {'false_alarms': false_alarms, 'valid_cells': total_valid_cells, 'detected': detected,
-                'n_targets': n_targets}
+        # Calculate batch-wide PD
+        # Calculate PD (if no targets, count as PD=1)
+        pd = torch.where(n_targets > 0, detected / n_targets, torch.ones_like(n_targets, dtype=torch.float32))
+        pd = pd.mean().item()
+
+        return {'pfa': pfa, 'pd': pd}
 
     def find_threshold(self, loader, target_pfa):
-        """Find threshold for target PFA using binary search with vectorized operations"""
+        """Find threshold for target PFA using binary search with global metrics"""
         # Initialize threshold using first batch
         first_batch = next(iter(loader))
         rd_maps = first_batch[0].to(self.device)
@@ -247,16 +406,14 @@ class CFARTester:
         pfa_res = 1.0
         rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
-        while rel_err >= 0.01 and cnt < 35:
-            total_false_alarms = 0
-            total_valid_cells = 0
-
+        # Binary search of the threshold
+        while rel_err >= 0.01 and cnt < 20:
+            batch_pfa = 0
             for rd_maps, Y_true in loader:
                 metrics = self.evaluate_batch(rd_maps, Y_true, th)
-                total_false_alarms += metrics['false_alarms'].sum()
-                total_valid_cells += metrics['valid_cells'].sum()
-
-            pfa_res = (total_false_alarms / total_valid_cells).item()
+                batch_pfa += metrics["Pfa"]
+            # Calculate global PFA
+            pfa_res = batch_pfa / len(loader)
             rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
             step = step * 0.5
@@ -267,76 +424,65 @@ class CFARTester:
 
             cnt += 1
 
-        print(f"Found threshold = {th:.4f}, PFA = {pfa_res:.6f} after {cnt} iterations")
+        print(f"Found threshold = {th:.4f}, pFA = {pfa_res:.6f}, after {cnt} iterations")
         return th
 
     def evaluate_pd_pfa(self, nu, scnr=0):
         """Evaluate PD vs PFA with vectorized batch processing"""
-        # Create dataset with larger batch size for better parallelization
-        dataset = ConcatDataset([RadarDataset(1024, 4, False, nu, scnr), RadarDataset(512, 0, False, nu, scnr)])
-        loader = DataLoader(dataset, batch_size=512, num_workers=2, persistent_workers=True,
+        # Create dataset with batch processing
+        dataset = ConcatDataset([RadarDataset(4096, 4, False, nu, scnr), RadarDataset(2048, 0, False, nu, scnr)])
+        loader = DataLoader(dataset, batch_size=256, num_workers=2, persistent_workers=True,
                             pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
 
-        target_pfas = [1e-5, 5e-5, 1e-4, 5e-4, 1e-3]
+        target_pfas = [5e-5, 1e-4, 5e-4, 1e-3, 5e-3]
         results = []
 
         for target_pfa in tqdm(target_pfas, desc="Testing PFAs"):
             threshold = self.find_threshold(loader, target_pfa)
-
-            total_detected = 0
-            total_targets = 0
-            total_false_alarms = 0
-            total_valid_cells = 0
+            pd = 0
+            pfa = 0
 
             for rd_maps, Y_true in loader:
                 metrics = self.evaluate_batch(rd_maps, Y_true, threshold)
+                pd += metrics['pd']/len(loader)
+                pfa += metrics['pfa']/len(loader)
 
-                total_detected += metrics['detected'].sum()
-                total_targets += metrics['n_targets'].sum()
-                total_false_alarms += metrics['false_alarms'].sum()
-                total_valid_cells += metrics['valid_cells'].sum()
-
-            avg_pd = (total_detected / total_targets).item()
-            avg_pfa = (total_false_alarms / total_valid_cells).item()
-            results.append((avg_pd, avg_pfa))
+            results.append((pd, pfa))
 
         pd_list, pfa_list = zip(*results)
+
         return np.array(pd_list), np.array(pfa_list)
 
     def evaluate_pd_scnr(self, nu, target_pfa=5e-4):
         """Evaluate PD vs SCNR with vectorized batch processing"""
         # Find threshold using reference dataset
-        ref_dataset = ConcatDataset([RadarDataset(1024, 4, False, nu, 0), RadarDataset(512, 0, False, nu)])
-        ref_loader = DataLoader(ref_dataset, batch_size=512, num_workers=2, persistent_workers=True,
+        ref_dataset = ConcatDataset([RadarDataset(4096, 4, False, nu, 0), RadarDataset(2048, 0, False, nu)])
+        ref_loader = DataLoader(ref_dataset, batch_size=256, num_workers=2, persistent_workers=True,
                                 pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
         threshold = self.find_threshold(ref_loader, target_pfa)
 
-        scnr_range = np.arange(-40, 11, 5)
+        # Test over SCNR range
+        scnr_range = np.arange(-30, 10, 5)
         results = []
 
         for scnr in tqdm(scnr_range, desc="Testing SCNR values"):
-            test_dataset = ConcatDataset([RadarDataset(1024, 4, False, nu, scnr), RadarDataset(512, 0, False, nu)])
-            test_loader = DataLoader(test_dataset, batch_size=512, num_workers=2, persistent_workers=True,
+            test_dataset = ConcatDataset([RadarDataset(4096, 4, False, nu, scnr), RadarDataset(2048, 0, False, nu)])
+            test_loader = DataLoader(test_dataset, batch_size=256, num_workers=2, persistent_workers=True,
                                      pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
 
-            total_detected = 0
-            total_targets = 0
-            total_false_alarms = 0
-            total_valid_cells = 0
+            # Initialize accumulators for full dataset metrics
+            pd = 0
+            pfa = 0
 
             for rd_maps, Y_true in test_loader:
                 metrics = self.evaluate_batch(rd_maps, Y_true, threshold)
+                pd += metrics['pd'] / len(test_loader)
+                pfa += metrics['pfa'] / len(test_loader)
 
-                total_detected += metrics['detected'].sum()
-                total_targets += metrics['n_targets'].sum()
-                total_false_alarms += metrics['false_alarms'].sum()
-                total_valid_cells += metrics['valid_cells'].sum()
-
-            avg_pd = (total_detected / total_targets).item()
-            avg_pfa = (total_false_alarms / total_valid_cells).item()
-            results.append((avg_pd, avg_pfa))
+            results.append((pd, pfa))
 
         pd_list, pfa_list = zip(*results)
+
         return np.array(pd_list), np.array(pfa_list), scnr_range
 
 
@@ -508,11 +654,11 @@ def test_cfar(detector="CA"):
     # PD vs PFA test (SCNR = 0dB)
     pd_pfa_results = {}
 
-    print("Running PD vs PFA test...")
-    for nu in tqdm(nu_values, desc="Testing clutter conditions"):
-        # Test CFAR
-        pd, pfa = cfar_tester.evaluate_pd_pfa(nu, scnr=0)
-        pd_pfa_results[nu] = (pd, pfa)
+    # print("Running PD vs PFA test...")
+    # for nu in tqdm(nu_values, desc="Testing clutter conditions"):
+    #     # Test CFAR
+    #     pd, pfa = cfar_tester.evaluate_pd_pfa(nu, scnr=0)
+    #     pd_pfa_results[nu] = (pd, pfa)
 
     # PD vs SCNR test (PFA = 5e-4)
     pd_scnr_results = {}
@@ -524,9 +670,9 @@ def test_cfar(detector="CA"):
         pd_scnr_results[nu] = (pd, pfa, scnr)
     cfar_dir = os.path.join(detector + "_CFAR_Results")
     os.makedirs(cfar_dir, exist_ok=True)
-    cfar_pd_pfa_path = os.path.join(cfar_dir, "PD_vs_PFA_results.pt")
+    # cfar_pd_pfa_path = os.path.join(cfar_dir, "PD_vs_PFA_results.pt")
     cfar_pd_scnr_path = os.path.join(cfar_dir, "PD_vs_SCNR_results.pt")
-    torch.save(pd_pfa_results, cfar_pd_pfa_path)
+    # torch.save(pd_pfa_results, cfar_pd_pfa_path)
     torch.save(pd_scnr_results, cfar_pd_scnr_path)
 
     return pd_pfa_results, pd_scnr_results
