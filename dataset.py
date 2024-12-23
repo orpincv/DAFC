@@ -21,8 +21,8 @@ class RadarDataset(Dataset):
         self.fs = 1e-6  # Baseband sample frequency
         self.c = 3e8  # Speed of light (m/s)
         self.CNR = 15  # Clutter-to-noise ratio (dB)
-        self.sigma2 = self.N / (2 * 10 ** (self.CNR / 10))
-        self.cn_norm = torch.sqrt(self.K * self.N * torch.tensor(self.N // 2 + self.sigma2))
+        self.sigma2 = (self.N // 2) / (10 ** (self.CNR / 10))
+        self.cn_norm = torch.sqrt(self.N * self.K * torch.tensor((self.N // 2) + self.sigma2))
 
         # Range and Doppler parameters
         self.rng_res = self.c / (2 * self.B)
