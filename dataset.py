@@ -96,7 +96,7 @@ class RadarDataset(Dataset):
         # Convert to fast-time × slow-time representation
         c_r_steer = torch.exp(
             -1j * 2 * torch.pi * torch.outer(torch.arange(self.N), self.R) * (2 * self.B) / (self.c * self.N))
-        C = c_r_steer @ c_t.transpose(0, 1)
+        C = c_r_steer @ c_t.transpose(-2, -1)
         return C
 
     def gen_frame_and_labels(self):
@@ -126,7 +126,7 @@ class RadarDataset(Dataset):
                 rd_label[r_bin, v_bin] = True
 
         # Combine signals
-        X = (S + C + W)
+        X = S + C + W
         return X, rd_label
 
     def __len__(self) -> int:

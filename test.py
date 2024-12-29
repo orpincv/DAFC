@@ -14,9 +14,11 @@ from model import DAFCRadarNet
 class CombinedRadarTester:
     def __init__(self, range_model, doppler_model, device):
         """Initialize combined radar tester"""
+        self.device = device
         self.range_model = range_model.to(device)
         self.doppler_model = doppler_model.to(device)
-        self.device = device
+        # Create the neighborhood kernel for 2D convolution
+        self.kernel = torch.ones(1, 1, 3, 3, device=device)
         self.R = generate_range_steering_matrix().to(device)
         self.V = generate_doppler_steering_matrix().to(device)
 
@@ -73,39 +75,25 @@ class CombinedRadarTester:
 
     def get_metrics(self, Y_hat, Y_true):
         """Evaluate detection performance for full dataset at once"""
-        # Create the neighborhood kernel for 2D convolution
-        kernel = torch.ones(1, 1, 3, 3, device=self.device)
-
-        # Extend Y_hat and Y_true for convolution
-        Y_hat_expanded = Y_hat.unsqueeze(1).float()  # [B, 1, H, W]
-        Y_true_expanded = Y_true.unsqueeze(1).float()  # [B, 1, H, W]
-
-        # Get extended matrices through convolution
-        Y_true_extended = F.conv2d(Y_true_expanded, kernel, padding=1).squeeze(1)
+        Y_true_extended = F.conv2d(Y_true.unsqueeze(1).float(), self.kernel, padding=1).squeeze(1)
         Y_true_extended = (Y_true_extended > 0)
-
-        # Calculate PFA: Exclude target neighborhoods
-        valid_cells = (~Y_true_extended).float()  # Cells not in target neighborhoods
-        false_alarms = (Y_hat * valid_cells).sum()
-        total_valid_cells = valid_cells.sum()
-        Pfa = false_alarms.item() / total_valid_cells.item()
-
-        # For PD: count targets and successful detections
-        n_targets = Y_true.sum(dim=(1, 2))  # [B]
-
-        # Get hits using extended Y_hat
-        Y_hat_extended = F.conv2d(Y_hat_expanded, kernel, padding=1).squeeze(1)
+        Y_hat_extended = F.conv2d(Y_hat.unsqueeze(1), self.kernel, padding=1).squeeze(1)
         Y_hat_extended = (Y_hat_extended > 0).float()
 
+        # Calculate PFA (excluding target neighborhoods)
+        valid_cells = (~Y_true_extended).float()
+        pfa = (Y_hat * valid_cells).sum() / valid_cells.sum()
+
+        # Calculate PD (only for frames with targets)
+        n_targets = Y_true.sum(dim=(1, 2))
         frames_with_targets = (n_targets > 0)
         if frames_with_targets.any():
             detected = (Y_hat_extended * Y_true).sum(dim=(1, 2))
-            Pd = (detected[frames_with_targets] / n_targets[frames_with_targets]).mean()
+            pd = (detected[frames_with_targets] / n_targets[frames_with_targets]).mean()
         else:
-            Pd = torch.tensor(0.0, device=self.device)
-        Pd = Pd.item()
+            pd = torch.tensor(0.0, device=self.device)
 
-        return {"Pd": Pd, "Pfa": Pfa}
+        return pd.item(), pfa.item()
 
     def find_threshold(self, loader, target_pfa):
         """Find threshold for target PFA using binary search"""
@@ -122,7 +110,7 @@ class CombinedRadarTester:
             Y_hat = self.predict(Y_r, Y_v, X_rv_proj, th)
             metrics = self.get_metrics(Y_hat, Y_true)
 
-            pfa_res = metrics["Pfa"]
+            pfa_res = metrics[0]
             rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
             step = step * 0.5
@@ -156,8 +144,8 @@ class CombinedRadarTester:
             print(f"Found threshold = {th:.4f}, PFA = {pfa_res:.6f}, after {cnt} iterations")
 
             Y_hat = self.predict(Y_r, Y_v, X_rv_proj, th)
-            metrics = self.get_metrics(Y_hat, Y_true)
-            results.append((metrics["Pd"], metrics["Pfa"]))
+            pd, pfa = self.get_metrics(Y_hat, Y_true)
+            results.append((pd, pfa))
 
         pd_list, pfa_list = zip(*results)
         return np.array(pd_list), np.array(pfa_list)
@@ -190,9 +178,9 @@ class CombinedRadarTester:
 
             # Evaluate using found threshold
             Y_hat = self.predict(Y_r, Y_v, X_rv_proj, th)
-            metrics = self.get_metrics(Y_hat, Y_true)
+            pd, pfa = self.get_metrics(Y_hat, Y_true)
 
-            results.append((metrics["Pd"], metrics["Pfa"]))
+            results.append((pd, pfa))
 
         pd_list, pfa_list = zip(*results)
         return np.array(pd_list), np.array(pfa_list), scnr_range
@@ -225,9 +213,8 @@ class CFARTester:
         """Calculate PD and PFA for the entire dataset"""
         Y_hat = (detection_surface > threshold).float()
 
-        # Create extended matrices for target neighborhoods
-        Y_true_expanded = F.conv2d(Y_true.unsqueeze(1).float(), self.kernel, padding=1).squeeze(1)
-        Y_true_extended = (Y_true_expanded > 0)
+        Y_true_extended = F.conv2d(Y_true.unsqueeze(1).float(), self.kernel, padding=1).squeeze(1)
+        Y_true_extended = (Y_true_extended > 0)
         Y_hat_extended = F.conv2d(Y_hat.unsqueeze(1), self.kernel, padding=1).squeeze(1)
         Y_hat_extended = (Y_hat_extended > 0).float()
 
@@ -260,7 +247,7 @@ class CFARTester:
         pfa_res = 1.0
         rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
-        while rel_err >= 0.01 and cnt < 20:
+        while rel_err >= 0.01 and cnt < 30:
             _, pfa_res = self.evaluate_metrics(detection_surface, Y_true, th)
             rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
@@ -454,7 +441,7 @@ def test_cfar(detector="CA"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfar = CACFAR() if detector == "CA" else TMCFAR()
     cfar_tester = CFARTester(cfar, device)
-    nu_values = [0.2, 0.5, 1.0]
+    nu_values = [200.0, 500.0, 1000.0]
 
     # PD vs PFA test (SCNR = 0dB)
     pd_pfa_results = {}
