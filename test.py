@@ -110,7 +110,7 @@ class CombinedRadarTester:
             Y_hat = self.predict(Y_r, Y_v, X_rv_proj, th)
             metrics = self.get_metrics(Y_hat, Y_true)
 
-            pfa_res = metrics[0]
+            pfa_res = metrics[1]
             rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
             step = step * 0.5
@@ -209,7 +209,7 @@ class CFARTester:
 
         return detection_surface, Y_true
 
-    def evaluate_metrics(self, detection_surface, Y_true, threshold):
+    def get_metrics(self, detection_surface, Y_true, threshold):
         """Calculate PD and PFA for the entire dataset"""
         Y_hat = (detection_surface > threshold).float()
 
@@ -248,7 +248,7 @@ class CFARTester:
         rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
         while rel_err >= 0.01 and cnt < 30:
-            _, pfa_res = self.evaluate_metrics(detection_surface, Y_true, th)
+            _, pfa_res = self.get_metrics(detection_surface, Y_true, th)
             rel_err = abs(pfa_res - target_pfa) / abs(target_pfa)
 
             step = step * 0.5
@@ -274,7 +274,7 @@ class CFARTester:
         for target_pfa in tqdm(target_pfas):
             th, pfa_res, cnt = self.find_threshold(loader, target_pfa)
             print(f"Found threshold = {th:.4f}, PFA = {pfa_res:.6f}, after {cnt} iterations")
-            pd, pfa = self.evaluate_metrics(detection_surface, Y_true, th)
+            pd, pfa = self.get_metrics(detection_surface, Y_true, th)
             results.append((pd, pfa))
 
         pd_list, pfa_list = zip(*results)
@@ -299,7 +299,7 @@ class CFARTester:
                                      pin_memory=torch.cuda.is_available(), collate_fn=cfar_collate_fn)
 
             detection_surface, Y_true = self.feed_forward(test_loader)
-            pd, pfa = self.evaluate_metrics(detection_surface, Y_true, threshold)
+            pd, pfa = self.get_metrics(detection_surface, Y_true, threshold)
             results.append((pd, pfa))
 
         pd_list, pfa_list = zip(*results)
@@ -361,20 +361,20 @@ def plot_pd_scnr(results: dict, save_path: str = 'pd_scnr'):
     plt.close()
 
 
-def load_trained_models():
+def load_trained_models(model_path=("models/range_model.pt", "models/doppler_model.pt")):
     """Load trained range and Doppler models"""
     range_model = DAFCRadarNet(detection_type="range")
     doppler_model = DAFCRadarNet(detection_type="doppler")
 
     try:
-        range_model.load_state_dict(torch.load('range_model.pt', weights_only=True))
+        range_model.load_state_dict(torch.load(model_path[0], weights_only=True))
         print("Loaded range model successfully")
     except FileNotFoundError:
         print("Range model not found. Please train the model first.")
         return None, None
 
     try:
-        doppler_model.load_state_dict(torch.load('doppler_model.pt', weights_only=True))
+        doppler_model.load_state_dict(torch.load(model_path[1], weights_only=True))
         print("Loaded doppler model successfully")
     except FileNotFoundError:
         print("Doppler model not found. Please train the model first.")
@@ -411,7 +411,7 @@ def generate_doppler_steering_matrix(K=64, dV=63, fc=9.39e9, T0=1e-3, c=3e8):
 def test():
     """Run complete test suite"""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    range_model, doppler_model = load_trained_models()
+    range_model, doppler_model = load_trained_models(("models/range_model.pt", "models/doppler_model.pt"))
     tester = CombinedRadarTester(range_model, doppler_model, device)
     nu_values = [0.2, 0.5, 1.0]
 
@@ -421,7 +421,7 @@ def test():
     for nu in tqdm(nu_values):
         pd, pfa = tester.evaluate_pd_pfa(nu, scnr=0)
         pd_pfa_results[nu] = (pd, pfa)
-    plot_pd_pfa(pd_pfa_results)
+    plot_pd_pfa(pd_pfa_results, "dafc_pd_pfa")
 
     # PD vs SCNR test (PFA = 5e-4)
     pd_scnr_results = {}
@@ -429,7 +429,7 @@ def test():
     for nu in tqdm(nu_values):
         pd, pfa, scnr = tester.evaluate_pd_scnr(nu)
         pd_scnr_results[nu] = (pd, pfa, scnr)
-    plot_pd_scnr(pd_scnr_results)
+    plot_pd_scnr(pd_scnr_results, "dafc_pd_scnr")
 
     save_results("dafc", pd_pfa_results, pd_scnr_results)
 
@@ -441,7 +441,7 @@ def test_cfar(detector="CA"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfar = CACFAR() if detector == "CA" else TMCFAR()
     cfar_tester = CFARTester(cfar, device)
-    nu_values = [200.0, 500.0, 1000.0]
+    nu_values = [0.2, 0.5, 1.0]
 
     # PD vs PFA test (SCNR = 0dB)
     pd_pfa_results = {}
@@ -457,7 +457,7 @@ def test_cfar(detector="CA"):
     print("Running PD vs SCNR test...")
     for nu in tqdm(nu_values):
         # Test CFAR
-        pd, pfa, scnr = cfar_tester.evaluate_pd_scnr(nu)
+        pd, pfa, scnr = cfar_tester.evaluate_pd_scnr(nu, target_pfa=5e-4)
         pd_scnr_results[nu] = (pd, pfa, scnr)
     plot_pd_scnr(pd_scnr_results, detector + "_CFAR_pd_scnr")
 
