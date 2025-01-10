@@ -80,7 +80,8 @@ class DAFCBlock(nn.Module):
         Z_out = self.hc(self.col_fc(Z_reshaped))  # (batch*W_out, H_out)
 
         # Reshaping back to normal after applying nn.Linear
-        Z_out = Z_out.reshape(batch_size, -1, Z_out.size(-1))  # (batch, W_out, H_out)
+        # (batch, W_out, H_out)
+        Z_out = Z_out.reshape(batch_size, -1, Z_out.size(-1))
 
         Z_out = Z_out.transpose(1, 2)  # (batch, H_out, W_out)
 
@@ -113,7 +114,8 @@ class DAFCRadarNet(nn.Module):
 
         # Final FC layer
         fc_input_size = 4 * 128
-        self.fc = nn.Linear(fc_input_size, 32 if detection_type == "range" else 63)
+        self.fc = nn.Linear(
+            fc_input_size, 32 if detection_type == "range" else 63)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, X: torch.Tensor) -> torch.Tensor:

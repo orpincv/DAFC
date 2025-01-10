@@ -4,7 +4,7 @@ import torch.multiprocessing as mp
 
 
 if __name__ == "__main__":
-    mp.set_start_method('fork', force=True)
+    mp.set_start_method('spawn', force=True)
     # train()
-    test()
-    # test_cfar("CA")
+    # test()
+    test_cfar("CA")
